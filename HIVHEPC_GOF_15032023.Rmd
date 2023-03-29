@@ -1,0 +1,84 @@
+---
+title: "GOF for missBayes"
+author: "Jonathan J"
+date: "2023-03-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+###Load data
+```{r loaddata}
+# missModelMain
+```
+## Goodness-of-fit: comparing imputed and predicted
+We can compare the imputed networks `object$mix.nets` with the networks `aux.nets` predicted by the model manually using desnity, dyad, or triad census. Any number of functions of the imputed and predicted networks can be calculated, to investigate how the model fits a population network (Stys et al. 2020)
+
+###GOF for degree distribution
+The GOF distributions for degree are given by
+```{r gofdegs}
+# library(ergm)
+gofdegs <- gof.degree(missModelMain)
+```
+
+A plot function superimposes the imputed and predicted
+```{r gofdegs2}
+
+plot.gof.degree(gofdegs,max.deg.plot.ind = 11)
+```
+
+###Checking imputed degree distributions against the observed degree distributions for respondents
+If data are missing at random, we would expect that the outdegree distribution for the imputed networks is similar to the outdegree distributions for the respondents.
+
+```{r gofdegs3}
+
+# is.resopndent <- sapply((node_data$Resp=="Y"), as.numeric)
+is.resopndent <- (node_data$Resp=="Y")
+
+tempdeg <- gof.obs.degree(obs.net=net,mat=missModelMain,is.resopndent=is.resopndent ,directed=TRUE)
+par(mfrow=c(1,2))
+boxplot(tempdeg$mix.indeg[,1:10],ylim=range(tempdeg$mix.indeg[,1:10],tempdeg$aux.indeg[1:10] ), main='indegree' ,names=c(0:9))
+lines(tempdeg$aux.indeg[1:10],col='red')
+boxplot(tempdeg$mix.oudeg[,1:10],ylim=range(tempdeg$mix.oudeg[,1:10],tempdeg$aux.oudegg[1:10] ) ,main='outdegree',names=c(0:9))
+lines(tempdeg$aux.oudeg[1:10],col='red')
+lines(table(rowSums(adjMat)[is.resopndent]+1)/sum(is.resopndent))
+```
+
+
+##GOF for geodesic distances
+The GOF distributions for distances are given by
+```{r gofgoedist}
+gofdist <- gof.dist(missModelMain, directed=TRUE , max.path = 35)
+```
+
+A plot function superimposes the imputed and precicted
+```{r gofgoedist2}
+plot.gof.dist(gofdist,max.dist.plot.ind = 35,do.inf.dist=FALSE)
+```
+
+##GOF for edge-wise shared partners
+The GOF distributions for edge-wise shared partners are given by
+```{r gof.gwesp}
+gofesp <- gof.esp(ans=missModelMain,directed=TRUE)
+```
+A plot function superimposes the imputed and precicted
+```{r gof.gwesp.2}
+plot.gof.esp(gofesp= gofesp)
+```
+
+##Manually inspect the triad census
+Calculate the triad census for the predicted networks and the imputed networks
+```{r triadcensus}
+TriadPred <- triad.census(missModelMain$aux.nets)
+TriadImputed <- triad.census(missModelMain$mix.nets)
+```
+Compare, side by side, the triad counts of the predicted networks and the imputed networks.
+```{r triadcensus2}
+par( mfrow = c(4,4), oma = c(0,4,0,0) + 0.1,
+      mar = c(5,0,1,1) + 0.1)# oma sets outer margins and mar the margins
+for (j in c(1:16)){
+boxplot(TriadPred[,j],TriadImputed[,j],names = c('Pred','imp'), xlab=colnames(TriadPred)[j], yaxt='n' )
+ abline(h=mean(TriadImputed[,j]),col='red',lty=3) 
+}
+```

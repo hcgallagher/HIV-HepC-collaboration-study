@@ -1,0 +1,571 @@
+---
+title: "20221117_HIVHEPC_exploration"
+output: html_document
+date: "2022-11-17"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load data
+
+```{r working directory}
+# if necessary,
+# remove.packages("ergm")
+# remotes::install_version("ergm", version = "3.11.0", repos = "http://cran.us.r-project.org")
+
+# libraries
+library(here)
+library(ergm)  # NOTE: can't run on ergm 4.0 or higher because of deprecated functons
+library(sna)
+library(network)
+library(rle)
+
+# loading data
+node_data = read.csv(file = here("Data", "HIVHEPC_node_data.csv"))
+tie_data = read.csv(file = here("Data", "HIVHEPC_tie_data.csv"))
+```
+
+## Node data inspection
+
+### Descriptives
+
+```{r descriptives}
+# summary of the node data
+summary(node_data)
+
+# some frequencies
+plot(table(node_data$Sector), type = "h", main = "Frequencies of reported Sector")
+table(node_data$Sector)
+
+plot(table(node_data$ActualSector), type = "h", main = "Frequencies of actual Sector")
+table(node_data$ActualSector)
+
+plot(table(node_data$OrgType), type = "h", main = "Frequencies of organisation type (OrgType)")
+table(node_data$OrgType)
+
+plot(table(node_data$Type), type = "h", main = "Frequencies of organisation type (Type)")
+table(node_data$Type)
+
+plot(table(node_data$OrgSize), type = "h", main = "Frequencies of organisation size")
+table(node_data$OrgSize)
+
+plot(table(node_data$Level), type = "h", main = "Frequencies of organisation level")
+table(node_data$Level)
+
+plot(table(node_data$FundStatus), type = "h", main = "Frequencies of funding status")
+table(node_data$FundStatus)
+
+plot(table(node_data$Resp), type = "h", main = "Frequencies of respondents")
+table(node_data$Resp)
+```
+
+Off brief inspection, it seems like there seems to be more organisations who actually research HIV than what is reported.
+
+Looking at the proportions of organisation type, Peer organisations and NGOs are the most common (CBO and NGO-Health second most common) and Govt organisations are the least common (Hospitals and CALD-ATSI are the second least common).
+
+One thing to note is the 'Hierarchy' as listed in the excel datasheet.
+
+```{r hierarchy table}
+# table here because rmd is not very table friendly
+hierarchy = data.frame(Number = 1:3, 
+                       Type = c("Research,Govt", "CBO,PeerOrgs,CALD-ATSI", "Health,Hospitals,NGO,NGO-Health"))
+
+table(node_data$Type)
+
+knitr::kable(hierarchy)
+```
+
+
+One more thing to note is that **Org30, Org37, Org42, and Org47** are all organisations that are not on the name interpreter list (i.e., they would have 0 indegree). The following deletes these from both data objects.
+
+```{r delete boundary misspecification nodes}
+nodes.df = node_data
+ties.df = tie_data
+
+renegade4 <- c("Org30", "Org37", "Org42", "Org47")
+nodes.df <- nodes.df[-which(nodes.df[,1] %in% renegade4),]
+
+# there should be no rows in which the renegade 4 receive nominations
+length(which(ties.df[,2] %in% renegade4))==0
+
+ties.df <- ties.df[-which(ties.df[,1] %in% renegade4),]
+
+nodes.df$hierarchy <- 0
+for(i in c(1:nrow(hierarchy))){
+nodes.df[which(nodes.df$Type %in% unlist(sapply(hierarchy$Type, strsplit, ",")[i],
+                                         use.names = FALSE)),
+         which(colnames(nodes.df)=="hierarchy")] <- i
+}
+
+node_data = nodes.df
+tie_data = ties.df
+
+head(nodes.df)
+```
+
+
+
+### Closer look into organisation indicators
+
+```{r inspecc orgs}
+# let's look closer into the indicators for the organisation type
+orgInds = node_data[, 7:14]
+
+# can organisations only be one type?
+sum(rowSums(orgInds) == 1)
+
+# Answer: No.
+
+# let's check the ones that have both types
+orgInds[rowSums(orgInds) != 1,]
+
+# they're all CALD-ATSI.
+```
+
+So this inspection was to check if there was mutual exclusivity in some of these organisation types (e.g., A hospital probably can't be a community-based organisation (CBO) at the same time).
+
+It seems that the only exception is when they are CALD-ATSI.
+
+**Q:** Would it be better to keep the organisation type as mutually exclusive and have a separate indicator for whether they accommodate CALD-ATSI services?
+
+## Tie data inspection
+
+```{r renaming variables}
+# let's first rename the variables so it's clearer what they represent.
+# Taken from the survey,
+tieTypeCodebook = data.frame(varName = colnames(tie_data[,-c(1,2)]),
+                             tieMeaning = c("3yr_Collaborate",
+                                            "3yr_Shared_insight",
+                                            "12mo_Insight_send",
+                                            "12mo_Insight_receive",
+                                            "12mo_Org_planning_send",
+                                            "12mo_Org_planning_receive",
+                                            "12mo_Acted_on_received_info",
+                                            "12mo_Shared_resources_with",
+                                            "12mo_Collaborate_advocacy"))
+
+# print that table
+knitr::kable(tieTypeCodebook)
+
+# for transparency's sake let's rename these variables
+colnames(tie_data)[-c(1,2)] = tieTypeCodebook$tieMeaning
+```
+
+```{r tie data}
+## for ease's sake let's start by binarising the tie
+##choose the cutoff (tie weights of this number and above are considered a tie)
+netlvl <- 2
+
+tie_data_bin = tie_data
+tie_ind = tie_data_bin[,-c(1,2)] > (netlvl - 1)
+tie_data_bin[, -c(1,2)] = as.numeric(tie_ind)
+
+# a check to make sure they're identical (i.e., the 0s are exactly right), this should be 0.
+sum((tie_data == 0) != (tie_data_bin == 0))
+
+# let's start with an example with Q1.
+# make an empty data structure
+adjMat = matrix(0, nrow = nrow(node_data), ncol = nrow(node_data))
+rownames(adjMat) = node_data$ID
+colnames(adjMat) = rownames(adjMat)
+
+
+## Adjacency array
+adjArray = array(data = 0, 
+                 dim = c(nrow(node_data), nrow(node_data), nrow(tieTypeCodebook)),
+                 dimnames = list(c(node_data$ID),
+                                 c(node_data$ID),
+                                 c(tieTypeCodebook$tieMeaning)))
+
+
+# loop to translate edge list to adjarray
+
+# loop over all tie types
+for( tieType in 1:nrow(tieTypeCodebook) ){
+
+  # chosen tie type index
+  tieInds = tie_data_bin[, 2 + tieType]    # the 2+ is to account for the FROM and TO columns
+  
+  # and loop over all entries
+  for( edgeInd in 1:nrow(tie_data_bin) ){
+  
+    # grab the sender and receiver
+    sender = tie_data_bin$FROM[edgeInd]
+    receiver = tie_data_bin$TO[edgeInd]
+  
+    # start filling in the matrix
+    adjArray[sender,receiver, tieType] = tieInds[edgeInd]
+  }
+}
+  
+
+# check to make sure the number of edges match
+dataEdges = as.numeric(apply(tie_data_bin[,-c(1,2)], MARGIN = 2, FUN = sum))
+arrayEdges = as.numeric(apply(adjArray, MARGIN = c(3), FUN = sum))
+
+# any mismatch? should be 0
+sum(dataEdges != arrayEdges)
+
+```
+
+### Create new covariates
+```{r create new covariates}
+library(dplyr)
+library(forcats)
+head(node_data)
+
+node_data <- node_data %>%
+  mutate(funder = fct_collapse(FundStatus,
+                               Recipient = c("Funded", "Unfunded"),
+                               Funder = "Funder")) %>%
+  # mutate(HCV = fct_collapse(ActualSector,
+  #                              No = "HIV",
+  #                              Yes = c("Both", "HCV"))) %>%
+  mutate(HIV = fct_collapse(ActualSector,
+                               No = "HCV",
+                               Yes = c("Both", "HIV"))) %>%
+  mutate(HIVonly = fct_collapse(ActualSector,
+                               Yes = "HIV",
+                               No = c("Both", "HCV"))) %>%
+  mutate(Both = fct_collapse(ActualSector,
+                               Yes = "Both",
+                               No = c("HCV", "HIV"))) %>%
+  mutate(HCV = fct_collapse(ActualSector,
+                               No = "HIV",
+                               Yes = c("Both", "HCV"))) %>%
+  mutate(HCVonly = fct_collapse(ActualSector,
+                               Yes = "HCV",
+                               No = c("Both", "HIV")))
+```
+
+
+### Covariate formatting
+
+```{r covariates}
+## Some monadic attributes
+# turn into factors to make sure levels are consistent and then to numeric because ergms don't like 'factors'
+# Note: factor indexing starts at 1. This is only annoying when we're dealing with BINARY data. Categorical data should be fine.
+sector = as.factor(node_data$Sector)
+actualSector = as.factor(node_data$ActualSector)
+orgType = as.factor(node_data$OrgType)
+orgSize = as.factor(node_data$OrgSize)
+type = as.factor(node_data$Type)
+level = as.factor(node_data$Level)
+fundStatus = as.factor(node_data$FundStatus)
+funder = as.factor(node_data$funder)
+HCV = as.factor(node_data$HCV)
+HIV = as.factor(node_data$HIV)
+HCVonly = as.factor(node_data$HCVonly)
+HIVonly = as.factor(node_data$HIVonly)
+Both = as.factor(node_data$Both)
+hierarchy = as.factor(node_data$hierarchy)
+CALD = as.numeric(node_data$CALD.ATSI)
+
+# check levels
+levels(sector)
+levels(actualSector)
+levels(orgType)
+levels(orgSize)
+levels(type)
+levels(level)
+levels(fundStatus)
+levels(funder)
+levels(HCV)
+levels(HCVonly)
+levels(HIV)
+levels(HIVonly)
+levels(Both)
+levels(hierarchy)
+
+
+# save as numeric
+sector = as.numeric(sector)
+actualSector = as.numeric(actualSector)
+orgType = as.numeric(orgType)
+orgSize = as.numeric(orgSize)
+type = as.numeric(type)
+level = as.numeric(level)
+national = abs(as.numeric(level)-2)
+fundStatus = as.numeric(fundStatus)
+funder = as.numeric(funder)-1
+HIV = abs(as.numeric(HIV)-2)
+HIVonly = abs(as.numeric(HIVonly)-1)
+HCV = abs(as.numeric(HCV)-2)
+HCVonly = abs(as.numeric(HCVonly)-1)
+Both = abs(as.numeric(Both)-2)
+hierarchy = 4 - as.numeric(hierarchy)
+
+## edge covariate for 'high trust organisational ties' (i.e., 2s in the edge list)
+## Adjacency array
+highTies = array(data = 0, 
+                 dim = c(nrow(node_data), nrow(node_data), nrow(tieTypeCodebook)),
+                 dimnames = list(c(node_data$ID),
+                                 c(node_data$ID),
+                                 c(tieTypeCodebook$tieMeaning)))
+
+
+# loop to translate edge list to adjarray
+
+# loop over all tie types
+for( tieType in 1:nrow(tieTypeCodebook) ){
+
+  # chosen tie type index
+  tieInds = tie_data[, 2 + tieType]    # the 2+ is to account for the FROM and TO columns
+  
+  # and loop over all entries
+  for( edgeInd in 1:nrow(tie_data_bin) ){
+  
+    # grab the sender and receiver
+    sender = tie_data_bin$FROM[edgeInd]
+    receiver = tie_data_bin$TO[edgeInd]
+  
+    # start filling in the matrix
+    highTies[sender,receiver, tieType] = tieInds[edgeInd]
+  }
+}
+
+# recode all 0s and 1s in highTies to be 0s and 2s to be 1s
+highTies[highTies <= 1] = 0
+highTies[highTies == 2] = 1
+
+# check to make sure the number of edges match
+highTieData = tie_data[, -c(1,2)] == 2
+
+dataHighs = as.numeric(apply(highTieData, MARGIN = 2, FUN = sum))
+arrayHighs = as.numeric(apply(highTies, MARGIN = c(3), FUN = sum))
+
+# any mismatch? should be 0
+sum(dataHighs != arrayHighs)
+
+# highTies can be used as an edge covariate by taking out the array with the selected tie type (e.g., 1 is collaborate high ties)
+
+```
+
+
+
+### Network inspection
+
+```{r network check, fig.height = 6, fig.width = 12}
+
+# loop to check all networks
+par(mfrow = c(1,3))
+
+for(tieType in 1:9){
+  
+  # choose adjmat
+  adjMat = adjArray[,,tieType]
+  
+  # plot the network
+  gplot(adjMat, 
+        gmode = "digraph",
+        edge.col = "grey",
+        usecurve = TRUE,
+        edge.curve = 0.05,
+        arrowhead.cex = 0.5,
+        vertex.cex = sna::degree(adjMat) * 0.075,
+        main = tieTypeCodebook$tieMeaning[tieType])
+
+  # bit difficult to see the plot, so maybe let's try a degree distribution
+  plot(table(rowSums(adjMat)), type = "h", main = "Outdegree distribution", xlab = "Outdegree", ylab = "Frequency")
+  lines(x = as.numeric(names(table(rowSums(adjMat)))), y = as.numeric(table(rowSums(adjMat))), col = "red") 
+
+  plot(table(colSums(adjMat)), type = "h", main = "Indegree distribution", xlab = "Indegree", ylab = "Frequency")
+  lines(x = as.numeric(names(table(colSums(adjMat)))), y = as.numeric(table(colSums(adjMat))), col = "red") 
+
+
+  # some censes
+  dyad.census(adjMat)
+  triad.census(adjMat)
+
+}
+
+```
+
+```{r choose tie}
+  
+### TODO: Choose one particular adjacency matrix
+chosenTieType = 5
+
+# 1 = 3yr_Collaborate
+# 2 = 3yr_Shared_insight
+# 3 = 12mo_Insight_send
+# 4 = 12mo_Insight_receive
+# 5 = 12mo_Org_planning_send
+# 6 = 12mo_Org_planning_receive
+# 7 = 12mo_Acted_on_received_info
+# 8 = 12mo_Shared_resources_with
+# 9 = 12mo_Collaborate
+## These can also be used as edge covariates
+
+# a check
+paste("Your chosen tie type is", tieTypeCodebook$tieMeaning[chosenTieType])
+
+# and we take from the adj array
+adjMat = adjArray[,,tieTypeCodebook$tieMeaning[chosenTieType]]
+  
+```
+
+
+Just off a brief inspection, it seems that the indegree distribution is not nearly as skewed as the outdegree distribution. There are only a few organisations with very high outdegree.
+
+## ERGM time, Missing.
+
+### What parts are missing?
+
+On thinking, due to being a name interpreter (i.e., list of 44 shown organisations), some null ties can be confirmed to be true null ties (i.e., the organisations have been given the option to nominate the organisation and chose not to).
+
+However, not all organisations responded to the survey, so technically speaking the outdegrees of the non-respondents should all be considered missing.
+
+Some tie types may facilitate a reciprocal relationship in terms of e.g., 'they shared their insight with me, thus they would acknowledge that they did indeed share their insight with the focal organisation'.
+
+One other consideration is that 4 organisations (Org30, Org37, Org42, Org47) were not in the name interpreter, so they could not have received incoming ties.
+
+```{r check miss, eval=FALSE}
+## non-respondents have 0 outdegree
+# this is indeed the case, should be 0 for no discrepancy
+sum((node_data$Resp=="N") != as.logical(rowSums(adjMat) == 0))
+
+# another way to check
+setequal(node_data$Resp=="N", as.logical(rowSums(adjMat) == 0))
+
+## organisations not in the name interpreter have 0 indegree
+print(node_data$ID[as.logical(colSums(adjMat) == 0)])
+```
+
+### Set missing values
+
+```{r make missing}
+## Adding missing tie variables to the adjacency matrix as described above
+missAdj = adjMat
+
+# Set row of all nonrespondents to missing
+nonResp = node_data$ID[node_data$Resp=="N"]
+missAdj[nonResp,] = NA
+
+# organisations not in the name interpreter
+# noIntOrg = c("Org30", "Org37", "Org42", "Org47")
+
+# missAdj[, noIntOrg] = NA
+
+# check how many missing tie variables there are
+table(missAdj, useNA = "always")
+
+```
+
+
+### Miss ERGM Bayes has entered the building
+```{r missERGMBayes, warning = FALSE}
+# load routine
+source(here("Code", "miss_ERGM_Bayes.r"))
+
+# change the outcome object to use the matrix with missingness
+net = as.network(missAdj)
+
+
+```
+
+
+```{r moremissbayes}
+
+modelnum <- 106
+modelname <- paste0("model_",modelnum)
+
+source(here("Code", "Models", paste0(modelname,".R")))
+
+startTime = Sys.time()
+#more Miss Bayes
+
+#burn in 
+missModelbrn = miss_ERGM_Bayes(formula = currentmodel,
+                                tot.iterations = 2000,
+                                tuning.const = 0.5,
+                                thinning = 1,
+                                burnin = 1,
+                                save.nets = FALSE,
+                                num.nets = 20,
+                                printFreq = 500,
+                                MultFac.aux = 200,
+                                MultFac.miss = 200,
+                                diagonal.proposal = FALSE,
+                                warm.burnin = 5000,
+                                warm.thin = 5000)
+
+
+
+# save covariance matrix for proposal covariance
+prop.var <- cov( missModelbrn$Post.theta[1:2000,] ) 
+
+# save the end point of the burn in model
+start.theta <- missModelbrn$Post.theta[2000,]
+
+
+# actual model
+missModelMain = miss_ERGM_Bayes(formula = currentmodel,
+                             tot.iterations = 3000,
+                             tuning.const = 0.5,
+                             thinning = 1,
+                             burnin = 1,
+                             save.nets = TRUE,
+                             num.nets = 100,
+                             printFreq = 500,
+                             MultFac.aux = 200,
+                             MultFac.miss = 200,
+                             diagonal.proposal = FALSE,
+                             warm.burnin = 1000,
+                             warm.thin = 1000,
+                             sigma.epsilon = prop.var,
+                             theta = start.theta)
+
+endTime = Sys.time()
+
+print(endTime - startTime)
+
+# check model results
+plot(ts(missModelMain$Post.theta[,c(1:5)]))
+plot(ts(missModelMain$Post.theta[,c(6:10)]))
+plot(ts(missModelMain$Post.theta[,c(11:15)]))
+plot(ts(missModelMain$Post.theta[,c(16:20)]))
+plot(ts(missModelMain$Post.theta[,c(20:23)]))
+
+#table
+res.table <- creatTab(missModelMain$Post.theta)
+res.table
+
+# write.csv(missModelMain, file='Markov_alt_shareresoruces.csv')
+
+saveRDS(missModelMain,file = paste0("results2_net_",chosenTieType, "_lvl_",netlvl,"_", modelname,"_",format(Sys.time(), "%d_%m_%y_%H%M"),".RDS"))
+
+```
+
+### Make a nice table for the results
+```{r tablemaker}
+library(gt)
+
+sigmarker <- which((res.table[,4]/res.table[,5]) > 0)
+
+
+
+res.table.1 <- res.table[c(1:ceiling(nrow(res.table)/2)),]
+res.table.2 <- res.table[c(ceiling(nrow(res.table)/2) + 1):nrow(res.table),]
+res.table.1 <- res.table.1 %>%
+  gt()
+res.table.2 <- res.table.2 %>%
+  gt()
+
+listed_tables <- list(res.table.1, res.table.2)
+
+gt_two_column_layout(listed_tables)
+
+res.table %>%
+  gt() #%>%
+  # gt_highlight_rows(
+  #    rows = 5,
+  #    fill = "lightgrey",
+  #    bold_target_only = TRUE
+  #  )
+
+```
