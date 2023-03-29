@@ -1,0 +1,43 @@
+# insert covariates in the network object
+net %v% 'funder' = funder
+net %v% 'type' = type
+net %v% 'size' = orgSize
+net %v% 'national' = national
+net %v% 'Both' = Both
+net %v% 'HCV' = HCV
+net %v% 'HCVonly' = HCVonly
+net %v% 'HIV' = HIV
+net %v% 'CALD' = CALD
+net %v% 'sector' = actualSector
+
+
+
+# the ERGM described above
+model_102 = net ~ edges +
+  mutual +
+  nodeicov('funder') +
+  nodeocov('funder') + 
+  nodeicov('CALD') +
+  nodeocov('CALD') + 
+  nodeicov('HCV') +
+  nodeocov('HCV') + 
+  nodeicov('HCVonly') +
+  nodeocov('HCVonly') + 
+  nodematch("HCV") + 
+  nodematch("HCVonly", diff = TRUE, levels = -1) + 
+  # nodematch("HIV", diff = TRUE, levels = -1) +
+  nodeicov('size') +
+  nodeocov('size') + 
+  nodematch('size') + 
+  nodeicov('national') +
+  nodeocov('national') + 
+  nodematch('national') + 
+  # # nodeicov('type') +
+  # # nodeocov('type') + 
+  nodematch('type') +
+  m2star +
+  gwidegree(decay = log(2), fixed = TRUE) + 
+  gwodegree(decay = log(2), fixed = TRUE) +
+  gwdsp(decay = log(2), fixed = TRUE) +
+  gwesp(decay = log(2), fixed = TRUE) 
+# edgecov(adjArray[,,"12mo_Org_planning_receive"])
