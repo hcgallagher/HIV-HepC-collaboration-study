@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# request nodes(ncpus), memory, and walltime
+# select here is a 'chunk',
+# if I set it to 2, it would request 2 batches of 1 cpu and 1gb of RAM ea for a total of 2cpus and 2gb of RAM
+
+#PBS -l select=1:ncpus=1:mem=1gb
+#PBS -l walltime=00:10:000
+
+# name the job to be submitted
+#PBS -N pbs_test_script
+
+# name the output file
+#PBS -o /home/z5293296/testRun
+
+# name the error output file
+#PBS -e /home/z5293296/testRun
+
+# merge output and error files
+#PBS -j oe
+
+# notify on abort, begin and end to the specified email, doesn't actually work?
+#PBS -m abe
+#PBS -M z5293296@ad.unsw.edu.au
+
+# specify an array index, array variable is "PBS_ARRAY_INDEX"
+#PBS -J 1-2
+
+# change directory to where the PBS script is
+cd $PBS_O_WORKDIR
+module load r/4.2.2
+Rscript --vanilla arrayTest.R
